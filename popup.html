@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Field Mirror</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header class="app-header">
+    <div class="app-title">
+      <svg class="app-logo" viewBox="0 0 24 24" aria-hidden="true">
+        <rect x="3" y="6" width="12" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="2"/>
+        <path d="M9 6V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-1" fill="none" stroke="currentColor" stroke-width="2"/>
+      </svg>
+      <div>
+        <h1>New Custom Field</h1>
+        <p class="app-subtitle">Create once, mirror across objects</p>
+      </div>
+    </div>
+    <div class="header-actions">
+      <div class="org-badge" id="orgBadge" hidden></div>
+      <button class="icon-btn" id="btnHistory" title="Recent jobs" aria-label="Recent jobs">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/>
+          <path d="M12 7v5l3.5 2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- Job history -->
+  <div id="screen-history" class="screen" hidden>
+    <div class="history-head">
+      <h2>Recent jobs</h2>
+      <span class="history-note">last 10 kept</span>
+    </div>
+    <div id="historyList" class="history-list"></div>
+    <footer class="wizard-footer">
+      <div class="footer-spacer"></div>
+      <button class="btn" id="btnHistoryBack">Back</button>
+    </footer>
+  </div>
+
+  <!-- Connection error screen -->
+  <div id="screen-disconnected" class="screen" hidden>
+    <div class="empty-state">
+      <div class="empty-icon">&#9888;</div>
+      <h2 id="disconnectedTitle">Not connected to Salesforce</h2>
+      <p id="disconnectedMsg">Open this popup from a tab where you're logged in to Salesforce (Lightning or Classic).</p>
+    </div>
+  </div>
+
+  <!-- Loading screen -->
+  <div id="screen-loading" class="screen">
+    <div class="empty-state">
+      <div class="spinner"></div>
+      <p>Connecting to your org&hellip;</p>
+    </div>
+  </div>
+
+  <!-- Wizard -->
+  <div id="screen-wizard" class="screen" hidden>
+    <nav class="progress" id="progressBar" aria-label="Steps">
+      <div class="progress-step" data-step="0"><span class="dot">1</span><span class="plabel">Type</span></div>
+      <div class="progress-step" data-step="1"><span class="dot">2</span><span class="plabel">Details</span></div>
+      <div class="progress-step" data-step="2"><span class="dot">3</span><span class="plabel">Objects</span></div>
+      <div class="progress-step" data-step="3"><span class="dot">4</span><span class="plabel">Security</span></div>
+      <div class="progress-step" data-step="4"><span class="dot">5</span><span class="plabel">Save</span></div>
+    </nav>
+
+    <main class="wizard-body">
+      <!-- Step 1: field type -->
+      <section class="step" data-step="0">
+        <h2 class="step-title">Choose the field type</h2>
+        <div class="type-list" id="typeList" role="radiogroup"></div>
+      </section>
+
+      <!-- Step 2: details -->
+      <section class="step" data-step="1" hidden>
+        <h2 class="step-title">Enter the details</h2>
+        <div class="form-grid">
+          <div class="form-el">
+            <label for="fieldLabel">Field Label <abbr class="req" title="required">*</abbr></label>
+            <input type="text" id="fieldLabel" maxlength="40" autocomplete="off">
+          </div>
+          <div class="form-el">
+            <label for="fieldName">Field Name <abbr class="req" title="required">*</abbr></label>
+            <div class="suffix-input">
+              <input type="text" id="fieldName" maxlength="40" autocomplete="off" spellcheck="false">
+              <span class="suffix">__c</span>
+            </div>
+            <p class="field-hint" id="fieldNameHint"></p>
+          </div>
+
+          <div id="typeOptions" class="type-options"></div>
+
+          <div class="form-el form-el-full">
+            <label for="fieldDescription">Description</label>
+            <textarea id="fieldDescription" rows="2" maxlength="1000"></textarea>
+          </div>
+          <div class="form-el form-el-full">
+            <label for="fieldHelpText">Help Text</label>
+            <textarea id="fieldHelpText" rows="2" maxlength="510"></textarea>
+          </div>
+          <div class="form-el form-el-full" id="requiredWrap">
+            <label class="checkbox">
+              <input type="checkbox" id="fieldRequired">
+              <span>Required &mdash; always require a value in this field in order to save a record</span>
+            </label>
+          </div>
+        </div>
+      </section>
+
+      <!-- Step 3: objects -->
+      <section class="step" data-step="2" hidden>
+        <h2 class="step-title">Select the objects to create this field on</h2>
+        <p class="step-desc">The identical field will be created on every object you select.</p>
+        <div class="object-list" id="objectList"></div>
+      </section>
+
+      <!-- Step 4: FLS -->
+      <section class="step" data-step="3" hidden>
+        <h2 class="step-title">Establish field-level security</h2>
+        <p class="step-desc" id="flsDesc">Choose which profiles can see or edit this field. Applies to all selected objects.</p>
+        <div id="flsRequiredNote" class="info-box" hidden>
+          This field is marked <strong>Required</strong>, so it will be visible and editable for all profiles automatically. No field-level security setup is needed.
+        </div>
+        <div id="flsTableWrap">
+          <div class="fls-toolbar">
+            <label class="checkbox"><input type="checkbox" id="flsAllVisible"><span>Visible for all</span></label>
+            <label class="checkbox"><input type="checkbox" id="flsAllReadOnly"><span>Read-only for all</span></label>
+          </div>
+          <div class="fls-scroll">
+            <table class="fls-table">
+              <thead>
+                <tr><th>Profile</th><th class="col-check">Visible</th><th class="col-check">Read-Only</th></tr>
+              </thead>
+              <tbody id="flsTableBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- Step 5: review / results -->
+      <section class="step" data-step="4" hidden>
+        <div id="reviewPane">
+          <h2 class="step-title">Review and save</h2>
+          <div class="review-card" id="reviewCard"></div>
+        </div>
+        <div id="resultsPane" hidden>
+          <h2 class="step-title" id="resultsTitle">Creating fields&hellip;</h2>
+          <ul class="results-list" id="resultsList"></ul>
+          <div id="flsResult" class="fls-result" hidden></div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="wizard-footer">
+      <button class="btn btn-neutral" id="btnBack" hidden>Back</button>
+      <div class="footer-spacer"></div>
+      <button class="btn btn-brand" id="btnNext">Next</button>
+    </footer>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
