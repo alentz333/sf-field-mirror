@@ -33,6 +33,7 @@ const FIELD_TYPES = [
 // Types that Salesforce does not allow to be universally required
 const NO_REQUIRED_TYPES = new Set(["Checkbox", "LongTextArea"]);
 const FALLBACK_API_VERSION = "61.0";
+const SF_ID_RE = /^[a-zA-Z0-9]{15,18}$/;
 
 // ---------------------------------------------------------------------------
 // State
@@ -104,10 +105,17 @@ async function connect() {
 
   // Pick the newest API version the org supports (endpoint needs no auth).
   try {
-    const res = await fetch(`https://${apiHost}/services/data/`);
-    const versions = await res.json();
-    if (Array.isArray(versions) && versions.length) {
-      state.apiVersion = versions[versions.length - 1].version;
+    const res = await fetch(`https://${apiHost}/services/data/`, {
+      signal: AbortSignal.timeout(10000),
+    });
+    if (res.ok) {
+      const versions = await res.json();
+      const latest = Array.isArray(versions) && versions.length
+        ? versions[versions.length - 1].version
+        : null;
+      if (typeof latest === "string" && /^\d+\.\d$/.test(latest)) {
+        state.apiVersion = latest;
+      }
     }
   } catch {
     /* keep fallback */
@@ -132,15 +140,27 @@ async function connect() {
   return true;
 }
 
+const SF_FETCH_TIMEOUT_MS = 30000;
+
 async function sfFetch(path, options = {}) {
-  const res = await fetch(`https://${state.apiHost}${path}`, {
-    ...options,
-    headers: {
-      Authorization: `Bearer ${state.sid}`,
-      "Content-Type": "application/json",
-      ...(options.headers || {}),
-    },
-  });
+  let res;
+  try {
+    res = await fetch(`https://${state.apiHost}${path}`, {
+      signal: AbortSignal.timeout(SF_FETCH_TIMEOUT_MS),
+      ...options,
+      headers: {
+        Authorization: `Bearer ${state.sid}`,
+        ...(options.body ? { "Content-Type": "application/json" } : {}),
+        ...(options.headers || {}),
+      },
+    });
+  } catch (e) {
+    throw new Error(
+      e.name === "TimeoutError"
+        ? "Salesforce did not respond within 30 seconds."
+        : "Network error — could not reach Salesforce."
+    );
+  }
   const text = await res.text();
   let body = null;
   if (text) {
@@ -266,6 +286,21 @@ function renderTypeOptions() {
   if (NO_REQUIRED_TYPES.has(t)) $("fieldRequired").checked = false;
 }
 
+// Parse a numeric option input, enforcing its own min/max attributes
+// (the attributes alone only constrain the spinner, not typed values).
+function numOpt(id) {
+  const el = $(id);
+  if (!el) return null;
+  const v = parseInt(el.value, 10);
+  const min = parseInt(el.min, 10);
+  const max = parseInt(el.max, 10);
+  const valid = Number.isInteger(v) && v >= min && v <= max;
+  el.classList.toggle("invalid", !valid && el.value.trim() !== "");
+  return valid ? v : null;
+}
+
+const PICKLIST_VALUE_MAX = 255;
+
 function validateDetails(showErrors) {
   const label = $("fieldLabel").value.trim();
   const name = $("fieldName").value.trim();
@@ -288,24 +323,25 @@ function validateDetails(showErrors) {
 
   const t = state.fieldType;
   if (t === "Picklist" || t === "MultiselectPicklist") {
-    if (getPicklistValues().length === 0) ok = false;
+    const values = getPicklistValues();
+    const tooLong = values.some((v) => v.length > PICKLIST_VALUE_MAX);
+    if (values.length === 0 || tooLong) ok = false;
+    $("optPicklistValues")?.classList.toggle("invalid", tooLong);
+    if (t === "MultiselectPicklist" && numOpt("optVisibleLines") === null) ok = false;
   }
   if (["Text", "LongTextArea"].includes(t)) {
-    const len = parseInt($("optLength")?.value, 10);
-    if (!len || len < 1) ok = false;
+    if (numOpt("optLength") === null) ok = false;
+    if (t === "LongTextArea" && numOpt("optVisibleLines") === null) ok = false;
   }
   if (["Number", "Currency", "Percent"].includes(t)) {
-    const digits = parseInt($("optDigits")?.value, 10);
-    const decimals = parseInt($("optDecimals")?.value, 10);
-    if (isNaN(digits) || isNaN(decimals) || digits < 1 || decimals < 0 || digits + decimals > 18) {
+    const digits = numOpt("optDigits");
+    const decimals = numOpt("optDecimals");
+    if (digits === null || decimals === null || digits + decimals > 18) {
       ok = false;
-      if (showErrors && digits + decimals > 18) {
+      if (showErrors && digits !== null && decimals !== null && digits + decimals > 18) {
         $("optDigits").classList.add("invalid");
         $("optDecimals").classList.add("invalid");
       }
-    } else {
-      $("optDigits")?.classList.remove("invalid");
-      $("optDecimals")?.classList.remove("invalid");
     }
   }
   return ok;
@@ -362,7 +398,10 @@ async function loadProfiles() {
     "SELECT Id, Profile.Name FROM PermissionSet WHERE IsOwnedByProfile = true ORDER BY Profile.Name"
   );
   const body = await sfFetch(`/services/data/v${state.apiVersion}/query/?q=${q}`);
-  state.profiles = (body.records || []).map((r) => ({ id: r.Id, name: r.Profile.Name }));
+  state.profiles = (body.records || []).map((r) => ({
+    id: r.Id,
+    name: (r.Profile && r.Profile.Name) || "(unnamed profile)",
+  }));
   state.profilesLoaded = true;
   for (const p of state.profiles) {
     if (!state.fls.has(p.id)) state.fls.set(p.id, { visible: false, readOnly: false });
@@ -383,8 +422,8 @@ function renderFlsStep() {
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td>${escapeHtml(p.name)}</td>
-      <td class="col-check"><input type="checkbox" class="fls-visible" data-id="${p.id}"></td>
-      <td class="col-check"><input type="checkbox" class="fls-readonly" data-id="${p.id}"></td>`;
+      <td class="col-check"><input type="checkbox" class="fls-visible"></td>
+      <td class="col-check"><input type="checkbox" class="fls-readonly"></td>`;
     const vis = tr.querySelector(".fls-visible");
     const ro = tr.querySelector(".fls-readonly");
     vis.checked = sel.visible;
@@ -567,9 +606,14 @@ async function runCreate() {
       state.createResults.push({ object: obj, ok: true, id: res.id });
       li.querySelector(".r-status").textContent = "✓";
       li.querySelector(".r-status").className = "r-status ok";
-      const setupUrl = `https://${state.lightningHost}/lightning/setup/ObjectManager/${obj}/FieldsAndRelationships/${res.id.slice(0, 15)}/view`;
-      li.querySelector(".r-msg").innerHTML =
-        `Created &middot; <a class="r-link" href="${setupUrl}" target="_blank" rel="noopener">View in Setup</a>`;
+      const fieldId = typeof res.id === "string" && SF_ID_RE.test(res.id) ? res.id.slice(0, 15) : null;
+      if (fieldId) {
+        const setupUrl = `https://${state.lightningHost}/lightning/setup/ObjectManager/${encodeURIComponent(obj)}/FieldsAndRelationships/${fieldId}/view`;
+        li.querySelector(".r-msg").innerHTML =
+          `Created &middot; <a class="r-link" href="${escapeHtml(setupUrl)}" target="_blank" rel="noopener">View in Setup</a>`;
+      } else {
+        li.querySelector(".r-msg").textContent = "Created";
+      }
     } catch (e) {
       state.createResults.push({ object: obj, ok: false, error: e.message });
       li.querySelector(".r-status").textContent = "✕";
@@ -722,7 +766,7 @@ async function renderHistory() {
       const typeName = (FIELD_TYPES.find((t) => t.type === j.type) || {}).name || j.type;
       const objects = j.objects
         .map((o) =>
-          `<span class="pill ${o.ok ? "pill-ok" : "pill-fail"}" title="${o.ok ? "Created" : escapeHtml(o.error || "Failed")}">${o.name}</span>`
+          `<span class="pill ${o.ok ? "pill-ok" : "pill-fail"}" title="${o.ok ? "Created" : escapeHtml(o.error || "Failed")}">${escapeHtml(o.name)}</span>`
         )
         .join("");
       return `

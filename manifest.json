@@ -3,12 +3,15 @@
   "name": "Field Mirror for Salesforce",
   "version": "1.0.0",
   "description": "Create a custom field once and mirror it across Lead, Contact, Opportunity, Case, and Account.",
+  "author": "Alex Lentz",
+  "homepage_url": "https://github.com/alentz333/sf-field-mirror",
   "permissions": ["cookies", "storage"],
   "host_permissions": [
     "https://*.salesforce.com/*",
     "https://*.salesforce-setup.com/*",
-    "https://*.force.com/*"
+    "https://*.lightning.force.com/*"
   ],
+  "minimum_chrome_version": "103",
   "action": {
     "default_popup": "popup.html",
     "default_title": "Field Mirror for Salesforce",
